@@ -186,15 +186,27 @@ void RenderClock(HWND hwnd) {
     D2D1_ELLIPSE clockCircle = D2D1::Ellipse(center, radius, radius);
     pRenderTarget->DrawEllipse(clockCircle, pWhiteBrush, 4.0f); // 4像素粗的外白圈
 
-    // 3. 獲取現實系統時間
-    time_t now = time(0);
-    tm ltm;
-    localtime_s(&ltm, &now);
+    // ==========================================
+    // 3. 獲取現實系統時間（升級為包含毫秒的 Windows 原生高精度時間）
+    // ==========================================
+    SYSTEMTIME st;
+    GetLocalTime(&st); // 👈 完美取代舊的 time() 和 localtime_s()
 
-    // 計算時、分、秒針旋轉角度（加上微調，讓指標走動更為絲滑線性）
-    float secAngle = ltm.tm_sec * 6.0f;                                       // 每秒 6 度
-    float minAngle = ltm.tm_min * 6.0f + ltm.tm_sec * 0.1f;                  // 每分 6 度 + 秒針微調
-    float hourAngle = (ltm.tm_hour % 12) * 30.0f + ltm.tm_min * 0.5f;         // 每時 30 度 + 分針微調
+    // 🌟 核心勻速數學公式 🌟
+    // 將毫秒融入秒，將秒融入分，將分融入時，實現完全勻速、無縫絲滑流暢走動
+
+    // 1. 勻速秒：當前秒數 + (當前毫秒 / 1000.0)
+    float currentSeconds = st.wSecond + (st.wMilliseconds / 1000.0f);
+    float secAngle = currentSeconds * 6.0f; // 每秒走 6 度
+
+    // 2. 勻速分：當前分數 + (當前勻速秒 / 60.0)
+    float currentMinutes = st.wMinute + (currentSeconds / 60.0f);
+    float minAngle = currentMinutes * 6.0f; // 每分鐘走 6 度
+
+    // 3. 勻速時：當前小時 + (當前勻速分 / 60.0)
+    float currentHours = (st.wHour % 12) + (currentMinutes / 60.0f);
+    float hourAngle = currentHours * 30.0f; // 每小時走 30 度
+    // ==========================================
 
     // 儲存當前未旋轉的原始座標矩陣
     D2D1_MATRIX_3X2_F originalMatrix;
