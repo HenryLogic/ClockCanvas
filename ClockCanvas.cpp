@@ -1,24 +1,19 @@
 ﻿#include <windows.h>
 #include <tchar.h>
 #include <string>
+#include <d2d1.h>
+#include <ctime>
 
-// 全域變數
+// 引入 Direct2D 連結庫
+#pragma comment(lib, "d2d1.lib")
+
+// --- 全域變數 ---
 HINSTANCE hInst;
 TCHAR szWindowClass[] = _T("MyScreenSaverClass");
-TCHAR szTitle[] = _T("C++ 2D Animation Screen Saver");
+TCHAR szTitle[] = _T("C++ Direct2D Clock Screen Saver");
 
-// 動態動畫變數（彈跳球）
-int ballX = 100, ballY = 100;
-int ballRadius = 30;
-int speedX = 5, speedY = 5;
-
-// 滑鼠初始位置（用來判斷是否有明顯移動）
+// 滑鼠初始位置（全螢幕模式下用來判斷是否有明顯移動）
 POINT initialMousePos = { -1, -1 };
-
-// 函數宣告
-LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
-void ParseCommandLine(LPSTR lpCmdLine, int& mode, HWND& parentHwnd);
-void UpdateAnimation(HWND hwnd);
 
 // 屏保執行模式
 enum ScreenSaverMode {
@@ -27,6 +22,21 @@ enum ScreenSaverMode {
     MODE_CONFIG     // /c 設定模式
 };
 
+// --- Direct2D 全域介面指標 ---
+ID2D1Factory* pD2DFactory = NULL;
+ID2D1HwndRenderTarget* pRenderTarget = NULL;
+ID2D1SolidColorBrush* pWhiteBrush = NULL;
+ID2D1SolidColorBrush* pGrayBrush = NULL;
+ID2D1SolidColorBrush* pAccentBrush = NULL; // 秒針螢光綠
+
+// --- 函數宣告 ---
+LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+void ParseCommandLine(LPSTR lpCmdLine, int& mode, HWND& parentHwnd);
+void InitD2D(HWND hwnd);
+void CleanD2D();
+void RenderClock(HWND hwnd);
+
+// === 程式入口 WinMain ===
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
     hInst = hInstance;
@@ -38,7 +48,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     // 如果是設定模式，直接彈出提示並退出
     if (mode == MODE_CONFIG) {
-        MessageBox(NULL, _T("此螢幕保護程式沒有可配置的設定。"), szTitle, MB_OK | MB_ICONINFORMATION);
+        MessageBox(NULL, _T("此螢幕保護程式目前沒有可配置的設定。"), szTitle, MB_OK | MB_ICONINFORMATION);
         return 0;
     }
 
@@ -49,7 +59,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     wcex.lpfnWndProc = WndProc;
     wcex.hInstance = hInstance;
     wcex.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wcex.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH); // 背景黑色
+    wcex.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH); // 靜態靜止期與擦除預設為黑色
     wcex.lpszClassName = szWindowClass;
     RegisterClassEx(&wcex);
 
@@ -57,7 +67,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     DWORD style = WS_POPUP;
     int x = 0, y = 0, width = 0, height = 0;
 
-    // 3. 根據模式創建視窗
+    // 3. 根據模式創建相對應的視窗骨架
     if (mode == MODE_PREVIEW && parentHwnd != NULL) {
         // 預覽模式：嵌入到系統設定的小視窗中
         style = WS_CHILD | WS_VISIBLE;
@@ -83,7 +93,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
 
-    // 創建定時器控制動畫（約每秒 60 幀）
+    // 創建高頻鬧鐘控制動畫（約 16 毫秒一次，精準對齊 60 FPS）
     SetTimer(hwnd, 1, 16, NULL);
 
     // 4. 訊息迴圈
@@ -94,13 +104,13 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
     if (mode == MODE_SAVER) {
-        ShowCursor(TRUE); // 恢復滑鼠
+        ShowCursor(TRUE); // 退出時恢復滑鼠顯示
     }
 
     return (int)msg.wParam;
 }
 
-// 解析命令列參數的輔助函數
+// === 命令列解析分流 ===
 void ParseCommandLine(LPSTR lpCmdLine, int& mode, HWND& parentHwnd)
 {
     std::string cmd(lpCmdLine);
@@ -109,7 +119,6 @@ void ParseCommandLine(LPSTR lpCmdLine, int& mode, HWND& parentHwnd)
         return;
     }
 
-    // 轉化為小寫方便處理
     for (char& c : cmd) c = tolower(c);
 
     if (cmd.find("/s") != std::string::npos) {
@@ -120,7 +129,6 @@ void ParseCommandLine(LPSTR lpCmdLine, int& mode, HWND& parentHwnd)
     }
     else if (cmd.find("/p") != std::string::npos) {
         mode = MODE_PREVIEW;
-        // 提取父視窗控制代碼（句柄）
         size_t pos = cmd.find_last_of(" 0123456789");
         if (pos != std::string::npos) {
             std::string hwndStr = cmd.substr(pos);
@@ -129,86 +137,118 @@ void ParseCommandLine(LPSTR lpCmdLine, int& mode, HWND& parentHwnd)
     }
 }
 
-// 2D 動態邏輯
-void UpdateAnimation(HWND hwnd)
-{
-    RECT rect;
-    GetClientRect(hwnd, &rect);
+// === Direct2D 顯示卡硬體資源初始化 ===
+void InitD2D(HWND hwnd) {
+    // 1. 創建 D2D 工廠
+    D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &pD2DFactory);
 
-    // 更新位置
-    ballX += speedX;
-    ballY += speedY;
+    // 2. 測量當前視窗真實尺寸
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    D2D1_SIZE_U size = D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top);
 
-    // 碰撞邊界檢測
-    if (ballX - ballRadius < 0 || ballX + ballRadius > rect.right) {
-        speedX = -speedX;
-    }
-    if (ballY - ballRadius < 0 || ballY + ballRadius > rect.bottom) {
-        speedY = -speedY;
-    }
+    // 3. 綁定 HWND 建立 GPU 渲染目標（畫布）
+    pD2DFactory->CreateHwndRenderTarget(
+        D2D1::RenderTargetProperties(),
+        D2D1::HwndRenderTargetProperties(hwnd, size),
+        &pRenderTarget
+    );
 
-    // 觸發視窗重繪
-    InvalidateRect(hwnd, NULL, FALSE);
+    // 4. 建立繪圖專用的固態顏色刷子
+    pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &pWhiteBrush);
+    pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::LightGray), &pGrayBrush);
+    pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 1.0f, 0.5f, 1.0f), &pAccentBrush); // 螢光綠秒針
 }
 
-// 視窗訊息處理
+// === Direct2D 資源安全銷毀 ===
+void CleanD2D() {
+    if (pAccentBrush) { pAccentBrush->Release(); pAccentBrush = NULL; }
+    if (pGrayBrush) { pGrayBrush->Release(); pGrayBrush = NULL; }
+    if (pWhiteBrush) { pWhiteBrush->Release(); pWhiteBrush = NULL; }
+    if (pRenderTarget) { pRenderTarget->Release(); pRenderTarget = NULL; }
+    if (pD2DFactory) { pD2DFactory->Release(); pD2DFactory = NULL; }
+}
+
+// === Direct2D 圓盤時鐘渲染核心 ===
+void RenderClock(HWND hwnd) {
+    // 如果畫布還沒建立，立刻線上初始化
+    if (!pRenderTarget) InitD2D(hwnd);
+
+    pRenderTarget->BeginDraw();
+    pRenderTarget->Clear(D2D1::ColorF(D2D1::ColorF::Black)); // GPU 高速全螢幕塗黑
+
+    // 1. 計算時鐘中心點與半徑
+    D2D1_SIZE_F size = pRenderTarget->GetSize();
+    D2D1_POINT_2F center = D2D1::Point2F(size.width / 2.0f, size.height / 2.0f);
+    float radius = min(size.width, size.height) / 3.0f;
+
+    // 2. 畫抗鋸齒精美外圓盤
+    D2D1_ELLIPSE clockCircle = D2D1::Ellipse(center, radius, radius);
+    pRenderTarget->DrawEllipse(clockCircle, pWhiteBrush, 4.0f); // 4像素粗的外白圈
+
+    // 3. 獲取現實系統時間
+    time_t now = time(0);
+    tm ltm;
+    localtime_s(&ltm, &now);
+
+    // 計算時、分、秒針旋轉角度（加上微調，讓指標走動更為絲滑線性）
+    float secAngle = ltm.tm_sec * 6.0f;                                       // 每秒 6 度
+    float minAngle = ltm.tm_min * 6.0f + ltm.tm_sec * 0.1f;                  // 每分 6 度 + 秒針微調
+    float hourAngle = (ltm.tm_hour % 12) * 30.0f + ltm.tm_min * 0.5f;         // 每時 30 度 + 分針微調
+
+    // 儲存當前未旋轉的原始座標矩陣
+    D2D1_MATRIX_3X2_F originalMatrix;
+    pRenderTarget->GetTransform(&originalMatrix);
+
+    // 4. 繪製粗時針（利用 D2D 幾何變換旋轉）
+    pRenderTarget->SetTransform(D2D1::Matrix3x2F::Rotation(hourAngle, center));
+    pRenderTarget->DrawLine(center, D2D1::Point2F(center.x, center.y - radius * 0.5f), pWhiteBrush, 8.0f);
+
+    // 5. 繪製中分針
+    pRenderTarget->SetTransform(D2D1::Matrix3x2F::Rotation(minAngle, center));
+    pRenderTarget->DrawLine(center, D2D1::Point2F(center.x, center.y - radius * 0.75f), pGrayBrush, 5.0f);
+
+    // 6. 繪製螢光綠細秒針
+    pRenderTarget->SetTransform(D2D1::Matrix3x2F::Rotation(secAngle, center));
+    pRenderTarget->DrawLine(center, D2D1::Point2F(center.x, center.y - radius * 0.85f), pAccentBrush, 2.0f);
+
+    // 還原座標矩陣，確保後續繪圖不受影響
+    pRenderTarget->SetTransform(originalMatrix);
+
+    // 結束繪製
+    HRESULT hr = pRenderTarget->EndDraw();
+    // 💡 安全防護：萬一使用者在執行屏保時更改了螢幕解析度（Device Lost），GPU 畫布會失效
+    if (hr == D2DERR_RECREATE_TARGET) {
+        CleanD2D(); // 立刻清空，下一幀定時器觸發時會自動重新 InitD2D 重新適應新解析度！
+    }
+}
+
+// === 大腦核心 視窗訊息處理器 ===
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
-    // 取得視窗樣式，判斷是否為預覽模式（預覽模式不響應滑鼠退出）
     LONG_PTR style = GetWindowLongPtr(hWnd, GWL_STYLE);
     bool isPreview = (style & WS_CHILD) != 0;
 
     switch (message)
     {
     case WM_TIMER:
-        UpdateAnimation(hWnd);
+        // 16毫秒時間到，宣告整張畫板過期。最後參數填 FALSE 擋住系統粗暴擦除，交給 D2D1 完美覆蓋
+        InvalidateRect(hWnd, NULL, FALSE);
         break;
 
     case WM_PAINT:
     {
         PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hWnd, &ps);
+        BeginPaint(hWnd, &ps);
 
-        // 使用雙緩衝（Double Buffering）防止螢幕閃爍
-        RECT rect;
-        GetClientRect(hWnd, &rect);
-        HDC hdcMem = CreateCompatibleDC(hdc);
-        HBITMAP hbmMem = CreateCompatibleBitmap(hdc, rect.right, rect.bottom);
-        HGDIOBJ hOldBmp = SelectObject(hdcMem, hbmMem);
-
-        // 1. 填滿黑色背景
-        HBRUSH hBgBrush = CreateSolidBrush(RGB(0, 0, 0));
-        FillRect(hdcMem, &rect, hBgBrush);
-        DeleteObject(hBgBrush);
-
-        // 2. 畫一個綠色的 2D 圓球
-        HBRUSH hBallBrush = CreateSolidBrush(RGB(0, 255, 128));
-        HGDIOBJ hOldBrush = SelectObject(hdcMem, hBallBrush);
-
-        // 消除 GDI 畫圓外框線
-        HPEN hNullPen = CreatePen(PS_NULL, 0, 0);
-        HGDIOBJ hOldPen = SelectObject(hdcMem, hNullPen);
-
-        Ellipse(hdcMem, ballX - ballRadius, ballY - ballRadius, ballX + ballRadius, ballY + ballRadius);
-
-        // 清理 GDI 物件
-        SelectObject(hdcMem, hOldPen);
-        DeleteObject(hNullPen);
-        SelectObject(hdcMem, hOldBrush);
-        DeleteObject(hBallBrush);
-
-        // 將記憶體緩衝區複製到螢幕
-        BitBlt(hdc, 0, 0, rect.right, rect.bottom, hdcMem, 0, 0, SRCCOPY);
-
-        SelectObject(hdcMem, hOldBmp);
-        DeleteObject(hbmMem);
-        DeleteDC(hdcMem);
+        // 調用 Direct2D 硬體加速渲染時鐘，原本的 GDI 雙緩衝與黑刷子全部退役！
+        RenderClock(hWnd);
 
         EndPaint(hWnd, &ps);
     }
     break;
 
-    // 以下事件在全螢幕模式下觸發退出
+    // 以下事件在全螢幕屏保模式下觸發安全退出
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
     case WM_LBUTTONDOWN:
@@ -224,21 +264,26 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             int xPos = LOWORD(lParam);
             int yPos = HIWORD(lParam);
 
-            // 記錄滑鼠初次移動的位置
             if (initialMousePos.x == -1 && initialMousePos.y == -1) {
                 initialMousePos.x = xPos;
                 initialMousePos.y = yPos;
             }
-            // 如果滑鼠移動距離超過 3 像素，則判定使用者晃動滑鼠，退出屏保
+            // 滑鼠大力搖晃超過 3 像素緩衝區，安全退出
             else if (abs(xPos - initialMousePos.x) > 3 || abs(yPos - initialMousePos.y) > 3) {
                 PostQuitMessage(0);
             }
         }
         break;
 
+    case WM_SIZE:
+        // 💡 預覽小視窗可能會被系統縮放拉扯，解析度改變時需要銷毀 Direct2D 畫布以便重構
+        CleanD2D();
+        break;
+
     case WM_DESTROY:
-        KillTimer(hWnd, 1);
-        PostQuitMessage(0);
+        CleanD2D(); // 摧毀高階畫布，退還顯示卡記憶體
+        KillTimer(hWnd, 1); // 砸碎高頻鬧鐘
+        PostQuitMessage(0); // 宣告進程結束
         break;
 
     default:

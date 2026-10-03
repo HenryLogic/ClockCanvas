@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="ClockCanvas.vcxproj" />
+  <Project Path="ClockCanvas.vcxproj" Id="72bd8458-8978-43ea-b86a-307632d354cd" />
 </Solution>
