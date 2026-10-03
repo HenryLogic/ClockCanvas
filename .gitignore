@@ -1,0 +1,26 @@
+## 排除 Visual Studio 本地緩存與配置
+.vs/
+*.user
+*.suo
+*.vcxproj.user
+
+## 排除編譯產生的臨時檔案與輸出目錄
+Debug/
+Release/
+x64/
+x86/
+ARM/
+ARM64/
+[Dd]ebug/
+[Rr]elease/
+
+## 排除編譯日誌與臨時數據
+*.obj
+*.pch
+*.tlog
+*.log
+*.pdb
+*.idb
+*.ilk
+*.exe
+*.scr
