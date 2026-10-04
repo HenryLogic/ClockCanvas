@@ -165,8 +165,8 @@ void InitD2D(HWND hwnd) {
         // 分針與中心環專用：極淺粉藍色 (RGB: 180, 230, 255) -> 視覺上更亮、浮在最上層
         pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(180.0f / 255.0f, 230.0f / 255.0f, 255.0f / 255.0f, 1.0f), &pMinuteBrush);
 
-        // 秒針螢光綠保持不變
-        pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 1.0f, 0.5f, 1.0f), &pSecondBrush);
+        // 秒針白色
+        pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &pSecondBrush);
     }
 }
 
@@ -295,18 +295,46 @@ void RenderClock(HWND hwnd) {
     pRenderTarget->DrawRoundedRectangle(&minRoundedRect, pMinuteBrush, 6.0f);
 
     // ==========================================
-    // 6. 繪製螢光綠細秒針（長度為半徑的 0.85 倍）
-    // ==========================================
-    pRenderTarget->SetTransform(D2D1::Matrix3x2F::Rotation(secAngle, center));
-    pRenderTarget->DrawLine(center, D2D1::Point2F(center.x, center.y - radius * 0.85f), pSecondBrush, 2.0f);
-
-    // ==========================================
-    // 🌟 繪製中心獨立圓環（還原矩陣，半徑 20 像素，粗細 6 像素）
+    // 🌟 繪製中心獨立雙層圓環（還原矩陣，完美實現多層立體覆蓋視覺效果）
     // ==========================================
     pRenderTarget->SetTransform(originalMatrix);
-    float centerRingRadius = 10.0f;
-    D2D1_ELLIPSE centerCircle = D2D1::Ellipse(center, centerRingRadius, centerRingRadius);
-    pRenderTarget->DrawEllipse(centerCircle, pMinuteBrush, 6.0f);
+
+    // 【第一層底座：外層極淺藍圓環】半徑 10 像素，粗細 6 像素
+    float centerRingRadius1 = 10.0f;
+    D2D1_ELLIPSE centerCircle1 = D2D1::Ellipse(center, centerRingRadius1, centerRingRadius1);
+    pRenderTarget->DrawEllipse(centerCircle1, pMinuteBrush, 6.0f); // 與分針融為一體，蓋在時針上方
+
+    // ==========================================
+    // 6. 繪製純白細秒針與反向平衡尾巴（雙向發射，切齊內層白色圓環）
+    // ==========================================
+    pRenderTarget->SetTransform(D2D1::Matrix3x2F::Rotation(secAngle, center));
+
+    // 【A 部分：正向秒針針身】起點往上挪移 8 像素，往正上方發射
+    pRenderTarget->DrawLine(
+        D2D1::Point2F(center.x, center.y - 8.0f), // 正上方 8 像素外沿
+        D2D1::Point2F(center.x, center.y - totalSecondLength),
+        pSecondBrush,
+        4.0f // 4像素粗細
+    );
+
+    // 🌟 【B 部分：新需求 - 反向配重尾巴】長度為秒針的 1/10，往正下方發射
+    float tailLength = totalSecondLength * 0.1f; // 計算 1/10 秒針長度
+    float tailStartY = center.y + 8.0f;         // 🌟 起點往下挪移 8 像素，切齊白色圓環下壁
+    float tailEndY = tailStartY + tailLength;  // 尾巴的最遠端尖端
+
+    pRenderTarget->DrawLine(
+        D2D1::Point2F(center.x, tailStartY), // 從圓環下沿起點發射
+        D2D1::Point2F(center.x, tailEndY),   // 延伸至 1/10 長度終點
+        pSecondBrush, // 複用純白秒針刷子
+        4.0f          // 保持一體化的 4 像素粗細
+    );
+
+    // 【第二層頂蓋：內層純白圓環】半徑 6 像素，粗細 6 像素，覆蓋在最上層
+    float centerRingRadius2 = 6.0f;
+    D2D1_ELLIPSE centerCircle2 = D2D1::Ellipse(center, centerRingRadius2, centerRingRadius2);
+
+    // 🌟 核心修改：直接傳入升級為純白色的 pSecondBrush，不再需要新建和釋放臨時資源！
+    pRenderTarget->DrawEllipse(centerCircle2, pSecondBrush, 6.0f);
     // ==========================================
 
     // 結束繪製
