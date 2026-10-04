@@ -300,7 +300,7 @@ void RenderClock(HWND hwnd) {
             tickStart,
             tickEnd,
             pCurrentBrush,     // 👈 核心修改：傳入動態決定的淺藍或純白刷子
-            2.5f,              // 2.5像素粗細
+            2.5f,              // 2.5 像素粗細
             pRoundStrokeStyle  // 完美保持兩端半圓形的膠囊樣式
         );
     }
@@ -371,6 +371,8 @@ void RenderClock(HWND hwnd) {
     float hourAngle = currentHours * 30.0f;
     // ==========================================
 
+
+
     // ==========================================
     // 4. 繪製精美時針（總長度變為秒針的 1/3，完美保持三七分比例）
     // ==========================================
@@ -419,7 +421,7 @@ void RenderClock(HWND hwnd) {
         D2D1::Point2F(center.x, center.y - 10.0f),
         D2D1::Point2F(center.x, minRectBottomY),
         pMinuteBrush,
-        6.0f // 6像素粗細
+        6.0f // 6 像素粗細
     );
 
     // 【B 段：遠離旋轉軸的上半段 - 苗條型空心圓角矩形】占分針總長度的 70%
@@ -458,7 +460,7 @@ void RenderClock(HWND hwnd) {
         D2D1::Point2F(center.x, center.y - 8.0f), // 正上方 8 像素外沿
         D2D1::Point2F(center.x, center.y - totalSecondLength),
         pSecondBrush,
-        4.0f, // 4像素粗細
+        4.0f, // 4 像素粗細
         pRoundStrokeStyle  // 👈 核心修改：套用圓潤樣式，讓秒針尖端化為完美半圓
     );
 
@@ -475,8 +477,107 @@ void RenderClock(HWND hwnd) {
         pRoundStrokeStyle  // 👈 核心修改：套用圓潤樣式，讓尾巴最遠端也化為完美半圓
     );
 
-    // 鐵律：畫完後，必須立刻把坐標矩陣還原
+    // ==========================================
+    // 🌟 史詩級升級：巨型聯動秒針計時盤（60大秒刻度 + 60中秒刻度 + 480小秒刻度 = 共600根航空級極細密刻度線）
+    // ==========================================
+    // 根據正向偏心公式，計算大秒盤在當前旋轉座標系下的圓心
+    D2D1_POINT_2F bigSecondClockCenter = D2D1::Point2F(center.x, center.y + (5.0f * totalSecondLength));
+
+    // 大秒盤半徑（秒針長度的 6 倍）
+    float bigSecondClockRadius = totalSecondLength * 6.0f;
+
+    // 🌟 核心修改：總共需要繪製 600 根極細密刻度線 (60 秒 * 10 等分)
+    for (int m = 0; m < 600; ++m) {
+        // 🌟 核心修改：每根刻度線之間的角度剛好是 0.6 度 (360度 / 600根)
+        float bigSecondTickAngle = m * 0.6f;
+
+        // 🌟 神級幾何矩陣複合：
+        // 矩陣 1（右）：Matrix3x2F::Rotation(secAngle, center) -> 隨秒針整體公轉
+        // 矩陣 2（中）：Matrix3x2F::Rotation(-secAngle, bigSecondClockCenter) -> 🌟 核心修改：圍繞大盤圓心反向自轉，把正確示數轉到針尖前方
+        // 矩陣 3（左）：Matrix3x2F::Rotation(bigSecondTickAngle, bigSecondClockCenter) -> 沿著大盤圓周排版 600 根刻度
+        pRenderTarget->SetTransform(
+            D2D1::Matrix3x2F::Rotation(bigSecondTickAngle, bigSecondClockCenter) *
+            D2D1::Matrix3x2F::Rotation(-secAngle, bigSecondClockCenter) * // 👈 增加這行自轉補償矩陣
+            D2D1::Matrix3x2F::Rotation(secAngle, center)
+        );
+
+        float currentSecTickLen = 0.0f;
+        ID2D1SolidColorBrush* pSecTickBrush = NULL;
+
+        // 🌟 核心修改：利用 % 10 運算子智能判定 600 根線的 1秒/0.5秒 階梯主次層次
+        if (m % 10 == 0) {
+            // 情況 A：整除 10，代表這是【每秒整點大刻度】
+            currentSecTickLen = maxTickLength;
+            pSecTickBrush = pSecondBrush; // 複用全域變數：純白色刷子
+        }
+        else if (m % 10 == 5) {
+            // 情況 B：餘數為 5，代表這是正中間的【0.5秒中刻度】（大刻度的二分之一）
+            currentSecTickLen = maxTickLength * 0.5f;
+            pSecTickBrush = pTickBrush;   // 複用全域變數：深灰藍色刷子
+        }
+        else {
+            // 情況 C：其餘餘數，代表這是極細密的【0.1秒等分小刻度】（大刻度的四分之一）
+            currentSecTickLen = maxTickLength * 0.25f;
+            pSecTickBrush = pTickBrush;   // 複用全域變數：深灰藍色刷子
+        }
+
+        // 幾何外沿切齊：所有大盤刻度的終點都死死卡在大盤的外沿軌道上
+        D2D1_POINT_2F bigSecTickEnd = D2D1::Point2F(bigSecondClockCenter.x, bigSecondClockCenter.y - bigSecondClockRadius);
+        D2D1_POINT_2F bigSecTickStart = D2D1::Point2F(bigSecondClockCenter.x, bigSecondClockCenter.y - bigSecondClockRadius + currentSecTickLen);
+
+        // 繪製高流暢抗鋸齒的圓潤膠囊型超高密度大秒盤刻度
+        pRenderTarget->DrawLine(
+            bigSecTickStart,
+            bigSecTickEnd,
+            pSecTickBrush,
+            4.0f, // 4 像素粗細，維持極致的邊緣精細度
+            pRoundStrokeStyle
+        );
+
+        // ==========================================
+        // 🌟 核心修改：在大秒盤的 60 個大刻度內側，繪製【跟隨刻度方向傾斜】的數字示數
+        // ==========================================
+        if (m % 10 == 0 && pTextFormat != NULL) {
+            // 🌟 直接沿用 transformMatrix！不做任何反向扭正，文字會自然隨著圓周傾斜旋轉
+
+            // 幾何計算：在當前旋轉座標軸上，文字只需要沿著【正上方（Y軸負方向）】向心回縮即可
+            float bigNumberRadius = bigSecondClockRadius - (maxTickLength * 1.85f);
+            float textY = bigSecondClockCenter.y - bigNumberRadius;
+
+            // 為 24px 大字體數字挖一個相對座標下的 50x50 虛擬排版盒子
+            D2D1_RECT_F bigTextRect = D2D1::RectF(
+                bigSecondClockCenter.x - 25.0f,
+                textY - 25.0f,
+                bigSecondClockCenter.x + 25.0f,
+                textY + 25.0f
+            );
+
+            // 計算當前代表的秒數示數（12點鐘方向顯示 60）
+            int secondDisplayValue = m / 10;
+            if (secondDisplayValue == 0) secondDisplayValue = 60;
+
+            wchar_t bigNumStr[16]; // 準備一個可以裝 16 個字的空盒子
+            swprintf_s(
+                bigNumStr,           // 1. 目的地：你要把文字印到哪一個字串盒子裡？ (Buffer)
+                16,                  // 2. 盒子容量：這個盒子最多能裝幾個字？（防止溢位安全鎖，陣列可省略） (BufferCount)
+                L"%d",               // 3. 格式化密碼：你想怎麼組裝？（%d 代表這是一個整數） (Format)
+                secondDisplayValue   // 4. 真實數據：把哪一個變數的數值倒進 %d 的位置裡？ (Arguments)
+            );
+
+            // 呼叫 DrawText 將數字完美貼在環形發射軌道上
+            pRenderTarget->DrawText(
+                bigNumStr,
+                (UINT32)wcslen(bigNumStr),
+                pTextFormat,
+                bigTextRect,
+                pSecondBrush // 複用純白刷子
+            );
+        }
+    }
+
+    // 鐵律：秒針與大秒錶盤全部畫完，立刻把畫布座標矩陣強行扭回端正狀態！
     pRenderTarget->SetTransform(originalMatrix);
+    // ==========================================
 
     // 【第二層頂蓋：內層純白圓環】半徑 6 像素，粗細 6 像素，覆蓋在最上層
     float centerRingRadius2 = 6.0f;
