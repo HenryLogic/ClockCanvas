@@ -249,8 +249,8 @@ void RenderClock(HWND hwnd) {
     float radius = min(size.width, size.height) / 3.0f;
 
     // 2. 畫抗鋸齒精美外圓盤
-    D2D1_ELLIPSE clockCircle = D2D1::Ellipse(center, radius, radius);
-    pRenderTarget->DrawEllipse(clockCircle, pHourBrush, 4.0f); // 4像素粗的外白圈
+    //D2D1_ELLIPSE clockCircle = D2D1::Ellipse(center, radius, radius);
+    //pRenderTarget->DrawEllipse(clockCircle, pHourBrush, 4.0f); // 4像素粗的外圈
 
     // 🌟 核心比例修改：秒針長度是 radius * 0.85f，時針是它的 1/3
     float totalSecondLength = radius * 0.85f;
@@ -441,10 +441,92 @@ void RenderClock(HWND hwnd) {
     pRenderTarget->DrawRoundedRectangle(&minRoundedRect, pMinuteBrush, 6.0f);
 
     // ==========================================
+    // 🌟 核心新增：巨型聯動【分針】計時盤（60大分刻度 + 60中分刻度 + 480小分刻度 = 共600根微密刻度線 + 1到60環形示數）
+    // ==========================================
+    // 根據對稱偏心公式，計算大分盤在當前旋轉座標系下的圓心（精準落在分針針尖側，使用負 Y 軸方向回縮）
+    D2D1_POINT_2F bigMinuteClockCenter = D2D1::Point2F(center.x, center.y + (5.0f * totalMinLength));
+
+    // 大分盤半徑（分針長度的 6 倍）
+    float bigMinuteClockRadius = totalMinLength * 6.0f;
+
+    // 總共需要繪製 600 根極細密分刻度線 (60 分 * 10 等分)
+    for (int n = 0; n < 600; ++n) {
+        // 每根微密分刻度線之間的角度剛好是 0.6 度
+        float bigMinuteTickAngle = n * 0.6f;
+
+        // 🌟 矩陣複合：圍繞大分盤自己的圓心進行旋轉排版，並乘以分針角度，達成自轉對齊與偏心公轉
+        D2D1_MATRIX_3X2_F transformMatrixMin =
+            D2D1::Matrix3x2F::Rotation(bigMinuteTickAngle, bigMinuteClockCenter) *
+            D2D1::Matrix3x2F::Rotation(-minAngle, bigMinuteClockCenter) * // 👈 核心自轉補償
+            D2D1::Matrix3x2F::Rotation(minAngle, center);
+
+        pRenderTarget->SetTransform(transformMatrixMin);
+
+        float currentMinTickLen = 0.0f;
+        ID2D1SolidColorBrush* pMinTickBrush = NULL;
+
+        // 利用 % 10 運算子智能判定 600 根分線的階梯與色彩主次層次
+        if (n % 10 == 0) {
+            currentMinTickLen = maxTickLength;
+            pMinTickBrush = pMinuteBrush; // 大分刻度保持專屬的【極淺粉藍色】
+        }
+        else if (n % 10 == 5) {
+            currentMinTickLen = maxTickLength * 0.5f;
+            pMinTickBrush = pTickBrush;   // 中分刻度換成內斂【深灰藍色】
+        }
+        else {
+            currentMinTickLen = maxTickLength * 0.25f;
+            pMinTickBrush = pTickBrush;   // 小分刻度換成內斂【深灰藍色】
+        }
+
+        // 幾何外沿切齊：所有大分盤刻度的終點都死死卡在大分盤的外沿軌道上（往正上方拉伸發射）
+        D2D1_POINT_2F bigMinTickEnd = D2D1::Point2F(bigMinuteClockCenter.x, bigMinuteClockCenter.y - bigMinuteClockRadius);
+        D2D1_POINT_2F bigMinTickStart = D2D1::Point2F(bigMinuteClockCenter.x, bigMinuteClockCenter.y - bigMinuteClockRadius + currentMinTickLen);
+
+        // 繪製高流暢抗鋸齒的圓潤膠囊型大分盤刻度
+        pRenderTarget->DrawLine(bigMinTickStart, bigMinTickEnd, pMinTickBrush, 2.5f, pRoundStrokeStyle);
+
+        // ==========================================
+        // 🌟 大分盤 60 個整點刻度內側的【環形傾斜分鐘數字示數】
+        // ==========================================
+        if (n % 10 == 0 && pTextFormat != NULL) {
+            // 直接沿用當前變換矩陣，文字會自然隨著圓周傾斜
+            float bigMinNumberRadius = bigMinuteClockRadius - (maxTickLength * 1.85f);
+            float textMinY = bigMinuteClockCenter.y - bigMinNumberRadius;
+
+            // 為 24px 大字體數字挖一個排版盒子
+            D2D1_RECT_F bigMinTextRect = D2D1::RectF(
+                bigMinuteClockCenter.x - 25.0f,
+                textMinY - 25.0f,
+                bigMinuteClockCenter.x + 25.0f,
+                textMinY + 25.0f
+            );
+
+            // 計算當前代表的分鐘示數（12點鐘方向顯示 60）
+            int minuteDisplayValue = n / 10;
+            if (minuteDisplayValue == 0) minuteDisplayValue = 60;
+
+            wchar_t bigMinNumStr[16];
+            swprintf_s(bigMinNumStr, L"%d", minuteDisplayValue);
+
+            // 呼叫 DrawText 將數字貼在分盤發射軌道上
+            pRenderTarget->DrawText(
+                bigMinNumStr,
+                (UINT32)wcslen(bigMinNumStr),
+                pTextFormat,
+                bigMinTextRect,
+                pMinuteBrush // 🌟 使用分針專屬極淺藍，與秒盤的純白拉開極致的光影層次
+            );
+        }
+    }
+
+    // 鐵律：分針與大分錶盤全部畫完，立刻把畫布座標矩陣強行扭回端正狀態！
+    pRenderTarget->SetTransform(originalMatrix);
+    // ==========================================
+
+    // ==========================================
     // 🌟 繪製中心獨立雙層圓環（還原矩陣，完美實現多層立體覆蓋視覺效果）
     // ==========================================
-    pRenderTarget->SetTransform(originalMatrix);
-
     // 【第一層底座：外層極淺藍圓環】半徑 10 像素，粗細 6 像素
     float centerRingRadius1 = 10.0f;
     D2D1_ELLIPSE centerCircle1 = D2D1::Ellipse(center, centerRingRadius1, centerRingRadius1);
