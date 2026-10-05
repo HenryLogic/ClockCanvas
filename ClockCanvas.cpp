@@ -1,6 +1,11 @@
 ﻿#include <windows.h>
 #include <tchar.h>
 #include <string>
+#include <charconv>
+#include <cctype>
+#include <cstdio>
+#include <cstdarg>
+#include <share.h>
 #include <d2d1.h>
 #include <dwrite.h>
 
@@ -35,9 +40,24 @@ ID2D1StrokeStyle* pRoundStrokeStyle = NULL; // 🌟 新增：圓潤端筆畫樣�
 IDWriteFactory* pDWriteFactory = NULL;  // 文字工廠
 IDWriteTextFormat* pTextFormat = NULL;     // 文字樣式格式
 
+// 預覽診斷：每個進程獨立記錄，限制行數，避免 60 FPS 持續寫入磁碟。
+FILE* previewLog = nullptr;
+void PreviewLog(const char* format, ...) {
+    static unsigned lines = 0;
+    if (!previewLog || lines >= 200) return;
+    ++lines;
+    fprintf(previewLog, "[%llu] ", GetTickCount64());
+    va_list args;
+    va_start(args, format);
+    vfprintf(previewLog, format, args);
+    va_end(args);
+    fputc('\n', previewLog);
+    fflush(previewLog);
+}
+
 // --- 函數宣告 ---
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
-void ParseCommandLine(LPSTR lpCmdLine, int& mode, HWND& parentHwnd);
+bool ParseCommandLine(LPSTR lpCmdLine, int& mode, HWND& parentHwnd);
 void InitD2D(HWND hwnd);
 void CleanD2D();
 void RenderClock(HWND hwnd);
@@ -50,7 +70,22 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     HWND parentHwnd = NULL;
 
     // 1. 解析命令列參數
-    ParseCommandLine(lpCmdLine, mode, parentHwnd);
+    if (!ParseCommandLine(lpCmdLine, mode, parentHwnd)) return 0;
+    if (mode == MODE_PREVIEW) {
+        wchar_t temp[MAX_PATH] = {}, logPath[MAX_PATH] = {}, module[MAX_PATH] = {};
+        if (GetTempPathW(MAX_PATH, temp)) {
+            swprintf_s(logPath, L"%lsClockCanvas-preview-%lu.log", temp, GetCurrentProcessId());
+            previewLog = _wfsopen(logPath, L"w", _SH_DENYNO);
+        }
+        GetModuleFileNameW(NULL, module, MAX_PATH);
+        PreviewLog("build=%s %s exe=%ls args=%s nCmdShow=%d parent=%p", __DATE__, __TIME__, module, lpCmdLine, nCmdShow, parentHwnd);
+        // 跨進程子視窗需與宿主使用同一 DPI 上下文，避免建立時被系統重置。
+        if (IsWindow(parentHwnd)) {
+            const auto context = GetWindowDpiAwarenessContext(parentHwnd);
+            const auto previous = SetThreadDpiAwarenessContext(context);
+            PreviewLog("DPI context parent=%p previous=%p", context, previous);
+        }
+    }
 
     // 如果是設定模式，直接彈出提示並退出
     if (mode == MODE_CONFIG) {
@@ -67,20 +102,27 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     wcex.hCursor = LoadCursor(NULL, IDC_ARROW);
     wcex.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH); // 靜態靜止期與擦除預設為黑色
     wcex.lpszClassName = szWindowClass;
-    RegisterClassEx(&wcex);
+    if (!RegisterClassEx(&wcex)) {
+        PreviewLog("RegisterClassEx failed error=%lu", GetLastError());
+        return 0;
+    }
 
     HWND hwnd = NULL;
     DWORD style = WS_POPUP;
     int x = 0, y = 0, width = 0, height = 0;
 
     // 3. 根據模式創建相對應的視窗骨架
-    if (mode == MODE_PREVIEW && parentHwnd != NULL) {
+    if (mode == MODE_PREVIEW) {
         // 預覽模式：嵌入到系統設定的小視窗中
         style = WS_CHILD | WS_VISIBLE;
-        RECT rect;
-        GetClientRect(parentHwnd, &rect);
-        width = rect.right;
-        height = rect.bottom;
+        RECT rect = {};
+        if (!IsWindow(parentHwnd) || !GetClientRect(parentHwnd, &rect)) {
+            PreviewLog("Invalid parent / GetClientRect failed error=%lu", GetLastError());
+            return 0;
+        }
+        width = rect.right - rect.left;
+        height = rect.bottom - rect.top;
+        PreviewLog("Parent client=%dx%d visible=%d dpi=%u", width, height, IsWindowVisible(parentHwnd), GetDpiForWindow(parentHwnd));
         hwnd = CreateWindowEx(0, szWindowClass, szTitle, style, 0, 0, width, height, parentHwnd, NULL, hInstance, NULL);
     }
     else {
@@ -94,10 +136,16 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
         ShowCursor(FALSE); // 隱藏滑鼠
     }
 
-    if (!hwnd) return 0;
+    if (!hwnd) {
+        PreviewLog("CreateWindowEx failed error=%lu", GetLastError());
+        return 0;
+    }
 
-    ShowWindow(hwnd, nCmdShow);
+    // 預覽必須顯示子視窗，不沿用啟動器可能傳入的 SW_HIDE。
+    ShowWindow(hwnd, mode == MODE_PREVIEW ? SW_SHOWNOACTIVATE : nCmdShow);
+    PreviewLog("Created hwnd=%p visible=%d dpi=%u style=%08lx", hwnd, IsWindowVisible(hwnd), GetDpiForWindow(hwnd), GetWindowLong(hwnd, GWL_STYLE));
     UpdateWindow(hwnd);
+    if (mode == MODE_PREVIEW) RenderClock(hwnd);
 
     // 創建高頻鬧鐘控制動畫（約 16 毫秒一次，精準對齊 60 FPS）
     SetTimer(hwnd, 1, 16, NULL);
@@ -117,36 +165,49 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 }
 
 // === 命令列解析分流 ===
-void ParseCommandLine(LPSTR lpCmdLine, int& mode, HWND& parentHwnd)
+bool ParseCommandLine(LPSTR lpCmdLine, int& mode, HWND& parentHwnd)
 {
-    std::string cmd(lpCmdLine);
-    if (cmd.empty()) {
-        mode = MODE_SAVER;
-        return;
-    }
+    mode = MODE_SAVER;
+    parentHwnd = NULL;
+    std::string cmd(lpCmdLine ? lpCmdLine : "");
+    const char* whitespace = " \t\r\n";
+    const size_t start = cmd.find_first_not_of(whitespace);
+    if (start == std::string::npos) return true;
+    cmd = cmd.substr(start, cmd.find_last_not_of(whitespace) - start + 1);
 
-    for (char& c : cmd) c = tolower(c);
+    if (cmd.size() < 2 || (cmd[0] != '/' && cmd[0] != '-')) return false;
+    const char option = static_cast<char>(std::tolower(static_cast<unsigned char>(cmd[1])));
+    if (cmd.size() > 2 && cmd[2] != ':' &&
+        !std::isspace(static_cast<unsigned char>(cmd[2]))) return false;
 
-    if (cmd.find("/s") != std::string::npos) {
-        mode = MODE_SAVER;
-    }
-    else if (cmd.find("/c") != std::string::npos) {
+    if (option == 's') return cmd.size() == 2;
+    if (option == 'c') {
         mode = MODE_CONFIG;
+        return true;
     }
-    else if (cmd.find("/p") != std::string::npos) {
-        mode = MODE_PREVIEW;
-        size_t pos = cmd.find_last_of(" 0123456789");
-        if (pos != std::string::npos) {
-            std::string hwndStr = cmd.substr(pos);
-            parentHwnd = (HWND)(ULONG_PTR)std::stoull(hwndStr);
-        }
+    if (option != 'p') return false;
+    mode = MODE_PREVIEW;
+
+    // Windows 傳入 /p <HWND>；也接受 /p:<HWND>，必須讀取完整的十進位句柄。
+    size_t pos = cmd.find_first_not_of(whitespace, 2);
+    if (pos != std::string::npos && cmd[pos] == ':') {
+        pos = cmd.find_first_not_of(whitespace, pos + 1);
     }
+    if (pos == std::string::npos) return false;
+
+    ULONG_PTR handleValue = 0;
+    const char* end = cmd.data() + cmd.size();
+    const auto result = std::from_chars(cmd.data() + pos, end, handleValue, 10);
+    if (result.ec != std::errc() || result.ptr != end || handleValue == 0) return false;
+    parentHwnd = reinterpret_cast<HWND>(handleValue);
+    return true;
 }
 
 // === Direct2D 顯示卡硬體資源初始化 ===
 void InitD2D(HWND hwnd) {
     // 1. 創建 D2D 工廠
     HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &pD2DFactory);
+    PreviewLog("D2D1CreateFactory hr=0x%08lx", hr);
     if (FAILED(hr) || pD2DFactory == NULL) return; // 確保工廠絕對可用
 
     // 🌟 優化調整：工廠既然成功了，立刻建立「圓潤樣式」，不需要等畫布
@@ -188,6 +249,7 @@ void InitD2D(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     D2D1_SIZE_U size = D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top);
+    PreviewLog("Render target client=%ux%u", size.width, size.height);
 
     // 3. 綁定 HWND 建立 GPU 渲染目標（畫布）
     hr = pD2DFactory->CreateHwndRenderTarget(
@@ -195,9 +257,15 @@ void InitD2D(HWND hwnd) {
         D2D1::HwndRenderTargetProperties(hwnd, size),
         &pRenderTarget
     );
+    PreviewLog("CreateHwndRenderTarget hr=0x%08lx", hr);
 
     // 🌟 安全檢查：畫布建立成功，才建立依賴顯卡的畫刷
     if (SUCCEEDED(hr) && pRenderTarget != NULL) {
+        if (GetWindowLongPtr(hwnd, GWL_STYLE) & WS_CHILD) {
+            // 小預覽使用完整時鐘的邏輯畫布，字體、線寬與幾何一起縮小。
+            const float scale = min(size.width, size.height) / 1080.0f;
+            if (scale > 0.0f) pRenderTarget->SetDpi(96.0f * scale, 96.0f * scale);
+        }
         // 時針專用：標準淺藍色
         pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(100.0f / 255.0f, 200.0f / 255.0f, 255.0f / 255.0f, 1.0f), &pHourBrush);
 
@@ -212,6 +280,7 @@ void InitD2D(HWND hwnd) {
             D2D1::ColorF(75.0f / 255.0f, 90.0f / 255.0f, 105.0f / 255.0f, 1.0f),
             &pTickBrush
         );
+        PreviewLog("Resources hour=%p minute=%p second=%p tick=%p text=%p stroke=%p", pHourBrush, pMinuteBrush, pSecondBrush, pTickBrush, pTextFormat, pRoundStrokeStyle);
     }
 }
 
@@ -671,6 +740,10 @@ void RenderClock(HWND hwnd) {
 
     // 結束繪製
     HRESULT hr = pRenderTarget->EndDraw();
+    static unsigned loggedFrames = 0;
+    if (loggedFrames++ < 3 || FAILED(hr)) {
+        PreviewLog("EndDraw hr=0x%08lx size=%.1fx%.1f visible=%d occluded=%u", hr, size.width, size.height, IsWindowVisible(hwnd), static_cast<unsigned>(pRenderTarget->CheckWindowState()));
+    }
     // 💡 安全防護：萬一使用者在執行屏保時更改了螢幕解析度（Device Lost），GPU 畫布會失效
     if (hr == D2DERR_RECREATE_TARGET) {
         CleanD2D(); // 立刻清空，下一幀定時器觸發時會自動重新 InitD2D 重新適應新解析度！
@@ -686,8 +759,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     switch (message)
     {
     case WM_TIMER:
+        { static unsigned ticks = 0; if (ticks++ < 3) PreviewLog("WM_TIMER visible=%d update=%d", IsWindowVisible(hWnd), GetUpdateRect(hWnd, NULL, FALSE)); }
         // 16毫秒時間到，宣告整張畫板過期。最後參數填 FALSE 擋住系統粗暴擦除，交給 D2D1 完美覆蓋
-        InvalidateRect(hWnd, NULL, FALSE);
+        if (isPreview) {
+            RenderClock(hWnd);
+        }
+        else {
+            InvalidateRect(hWnd, NULL, FALSE);
+        }
         break;
 
     case WM_PAINT:
@@ -730,11 +809,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
 
     case WM_SIZE:
+        PreviewLog("WM_SIZE %ux%u", LOWORD(lParam), HIWORD(lParam));
         // 💡 預覽小視窗可能會被系統縮放拉扯，解析度改變時需要銷毀 Direct2D 畫布以便重構
         CleanD2D();
         break;
 
     case WM_DESTROY:
+        PreviewLog("WM_DESTROY");
+        if (previewLog) { fclose(previewLog); previewLog = nullptr; }
         CleanD2D(); // 摧毀高階畫布，退還顯示卡記憶體
         KillTimer(hWnd, 1); // 砸碎高頻鬧鐘
         PostQuitMessage(0); // 宣告進程結束
