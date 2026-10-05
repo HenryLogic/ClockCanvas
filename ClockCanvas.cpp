@@ -40,20 +40,58 @@ ID2D1StrokeStyle* pRoundStrokeStyle = NULL; // 🌟 新增：圓潤端筆畫樣�
 IDWriteFactory* pDWriteFactory = NULL;  // 文字工廠
 IDWriteTextFormat* pTextFormat = NULL;     // 文字樣式格式
 
-// 預覽診斷：每個進程獨立記錄，限制行數，避免 60 FPS 持續寫入磁碟。
-FILE* previewLog = nullptr;
-void PreviewLog(const char* format, ...) {
-    static unsigned lines = 0;
-    if (!previewLog || lines >= 200) return;
-    ++lines;
-    fprintf(previewLog, "[%llu] ", GetTickCount64());
-    va_list args;
-    va_start(args, format);
-    vfprintf(previewLog, format, args);
-    va_end(args);
-    fputc('\n', previewLog);
-    fflush(previewLog);
-}
+// 初始化為 nullptr (空指標)，實際使用前必須先用 fopen 打開檔案並賦值給它。
+// FILE* previewLog = nullptr;
+
+/**
+ * @brief 高效預覽日誌記錄函式
+ * @note 限制最大寫入行數，專為 60 FPS 等高頻率渲染環境設計，避免持續寫入磁碟拖慢系統效能。
+ * @param format 格式化字串（用法與 printf 完全相同，例如 "當前數值: %d"）
+ * @param ...    可變參數，配合 format 字串傳入任意數量、型態的參數
+ */
+// void PreviewLog(const char* format, ...) {
+    // 靜態變數：用來記錄目前已經寫入了幾行日誌。
+    // static 的特性是「只會初始化一次」，之後每次呼叫此函式，lines 的值都會被保留並累加。
+    // static unsigned lines = 0;
+    
+    // 安全性與效能檢查（防禦性編程）：
+    // 1. 如果檔案指標無效 (!previewLog)，代表檔案還沒打開，直接結束以防程式崩潰。
+    // 2. 如果已經寫滿 200 行 (lines >= 200)，直接結束，防止 60 FPS 產生的垃圾日誌塞爆硬碟。
+    // if (!previewLog || lines >= 200) return;
+    
+    // 確認要寫入日誌，行數計數器加 1
+    // ++lines;
+    
+    // 寫入時間戳記：
+    // GetTickCount64() 是 Windows API，返回從開機到現在所經過的「毫秒數」(ms)。
+    // [%llu] 代表以 64 位元無號整數格式輸出，方便開發者精確計算兩行 Log 之間隔了幾毫秒。
+    // fprintf(previewLog, "[%llu] ", GetTickCount64());
+    
+    // --- 開始處理可變參數 (...) ---
+    
+    // 1. 宣告一個參數列表指標變數 args，用來存放傳進來的未知參數群
+    // va_list args;
+    
+    // 2. 初始化 args 指標，告訴它從固定參數 'format' 後面的記憶體位置開始解析可變參數
+    // va_start(args, format);
+    
+    // 3. 核心寫入：vfprintf 是 fprintf 的兄弟函式，專門接收 va_list 封裝好的參數，
+    //    它會解析 format 中的 %d, %s 等，將它們與 args 中的數值組合後寫入 previewLog 檔案。
+    // vfprintf(previewLog, format, args);
+    
+    // 4. 清理與善後：關閉 args 指標，釋放資源，確保記憶體堆疊（Stack）的安全
+    // va_end(args);
+    
+    // --- 可變參數處理結束 ---
+    
+    // 自動在每條日誌尾端補上一個「換行符號」。
+    // 使用 fputc 寫入單一字元比使用 fprintf 解析字串更快、更省效能。
+    // fputc('\n', previewLog);
+    
+    // 強制清除檔案緩衝區（Flush）：
+    // 正常情況下作業系統會把文字先存留在記憶體，等累積多了才寫入硬碟。
+    // fflush 會命令系統「立刻」寫入磁碟。這樣萬一程式突然崩潰，最後的 Log 依然會保存在檔案裡，方便除錯。
+// }
 
 // --- 函數宣告 ---
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -72,18 +110,18 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     // 1. 解析命令列參數
     if (!ParseCommandLine(lpCmdLine, mode, parentHwnd)) return 0;
     if (mode == MODE_PREVIEW) {
-        wchar_t temp[MAX_PATH] = {}, logPath[MAX_PATH] = {}, module[MAX_PATH] = {};
-        if (GetTempPathW(MAX_PATH, temp)) {
-            swprintf_s(logPath, L"%lsClockCanvas-preview-%lu.log", temp, GetCurrentProcessId());
-            previewLog = _wfsopen(logPath, L"w", _SH_DENYNO);
-        }
-        GetModuleFileNameW(NULL, module, MAX_PATH);
-        PreviewLog("build=%s %s exe=%ls args=%s nCmdShow=%d parent=%p", __DATE__, __TIME__, module, lpCmdLine, nCmdShow, parentHwnd);
+        // wchar_t temp[MAX_PATH] = {}, logPath[MAX_PATH] = {}, module[MAX_PATH] = {};
+        // if (GetTempPathW(MAX_PATH, temp)) {
+            // swprintf_s(logPath, L"%lsClockCanvas-preview-%lu.log", temp, GetCurrentProcessId());
+            // previewLog = _wfsopen(logPath, L"w", _SH_DENYNO);
+        // }
+        // GetModuleFileNameW(NULL, module, MAX_PATH);
+        // PreviewLog("build=%s %s exe=%ls args=%s nCmdShow=%d parent=%p", __DATE__, __TIME__, module, lpCmdLine, nCmdShow, parentHwnd);
         // 跨進程子視窗需與宿主使用同一 DPI 上下文，避免建立時被系統重置。
         if (IsWindow(parentHwnd)) {
             const auto context = GetWindowDpiAwarenessContext(parentHwnd);
             const auto previous = SetThreadDpiAwarenessContext(context);
-            PreviewLog("DPI context parent=%p previous=%p", context, previous);
+            // PreviewLog("DPI context parent=%p previous=%p", context, previous);
         }
     }
 
@@ -103,7 +141,7 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     wcex.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH); // 靜態靜止期與擦除預設為黑色
     wcex.lpszClassName = szWindowClass;
     if (!RegisterClassEx(&wcex)) {
-        PreviewLog("RegisterClassEx failed error=%lu", GetLastError());
+        // PreviewLog("RegisterClassEx failed error=%lu", GetLastError());
         return 0;
     }
 
@@ -117,12 +155,12 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
         style = WS_CHILD | WS_VISIBLE;
         RECT rect = {};
         if (!IsWindow(parentHwnd) || !GetClientRect(parentHwnd, &rect)) {
-            PreviewLog("Invalid parent / GetClientRect failed error=%lu", GetLastError());
+            // PreviewLog("Invalid parent / GetClientRect failed error=%lu", GetLastError());
             return 0;
         }
         width = rect.right - rect.left;
         height = rect.bottom - rect.top;
-        PreviewLog("Parent client=%dx%d visible=%d dpi=%u", width, height, IsWindowVisible(parentHwnd), GetDpiForWindow(parentHwnd));
+        // PreviewLog("Parent client=%dx%d visible=%d dpi=%u", width, height, IsWindowVisible(parentHwnd), GetDpiForWindow(parentHwnd));
         hwnd = CreateWindowEx(0, szWindowClass, szTitle, style, 0, 0, width, height, parentHwnd, NULL, hInstance, NULL);
     }
     else {
@@ -137,13 +175,13 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     }
 
     if (!hwnd) {
-        PreviewLog("CreateWindowEx failed error=%lu", GetLastError());
+        // PreviewLog("CreateWindowEx failed error=%lu", GetLastError());
         return 0;
     }
 
     // 預覽必須顯示子視窗，不沿用啟動器可能傳入的 SW_HIDE。
     ShowWindow(hwnd, mode == MODE_PREVIEW ? SW_SHOWNOACTIVATE : nCmdShow);
-    PreviewLog("Created hwnd=%p visible=%d dpi=%u style=%08lx", hwnd, IsWindowVisible(hwnd), GetDpiForWindow(hwnd), GetWindowLong(hwnd, GWL_STYLE));
+    // PreviewLog("Created hwnd=%p visible=%d dpi=%u style=%08lx", hwnd, IsWindowVisible(hwnd), GetDpiForWindow(hwnd), GetWindowLong(hwnd, GWL_STYLE));
     UpdateWindow(hwnd);
     if (mode == MODE_PREVIEW) RenderClock(hwnd);
 
@@ -207,7 +245,7 @@ bool ParseCommandLine(LPSTR lpCmdLine, int& mode, HWND& parentHwnd)
 void InitD2D(HWND hwnd) {
     // 1. 創建 D2D 工廠
     HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &pD2DFactory);
-    PreviewLog("D2D1CreateFactory hr=0x%08lx", hr);
+    // PreviewLog("D2D1CreateFactory hr=0x%08lx", hr);
     if (FAILED(hr) || pD2DFactory == NULL) return; // 確保工廠絕對可用
 
     // 🌟 優化調整：工廠既然成功了，立刻建立「圓潤樣式」，不需要等畫布
@@ -249,7 +287,7 @@ void InitD2D(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     D2D1_SIZE_U size = D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top);
-    PreviewLog("Render target client=%ux%u", size.width, size.height);
+    // PreviewLog("Render target client=%ux%u", size.width, size.height);
 
     // 3. 綁定 HWND 建立 GPU 渲染目標（畫布）
     hr = pD2DFactory->CreateHwndRenderTarget(
@@ -257,14 +295,36 @@ void InitD2D(HWND hwnd) {
         D2D1::HwndRenderTargetProperties(hwnd, size),
         &pRenderTarget
     );
-    PreviewLog("CreateHwndRenderTarget hr=0x%08lx", hr);
+    // PreviewLog("CreateHwndRenderTarget hr=0x%08lx", hr);
 
     // 🌟 安全檢查：畫布建立成功，才建立依賴顯卡的畫刷
     if (SUCCEEDED(hr) && pRenderTarget != NULL) {
+        // 檢查當前視窗的樣式是否包含 WS_CHILD（子視窗標籤）
+        // GetWindowLongPtr 是 Windows API，用來查詢視窗的各種屬性（如樣式、狀態等）
+        // & 是位元與（AND）運算，用來判斷複合樣式中是否被勾選了「WS_CHILD」
         if (GetWindowLongPtr(hwnd, GWL_STYLE) & WS_CHILD) {
-            // 小預覽使用完整時鐘的邏輯畫布，字體、線寬與幾何一起縮小。
+    
+            // 【核心邏輯：小預覽畫面使用等比縮放】
+            // 開發者在設計這個時鐘時，是以 1080 像素（1080p 螢幕）作為標準（基準線）來寫所有的繪圖座標。
+            // 為了讓大時鐘能完美塞進小小的預覽視窗，我們需要計算縮放比例（scale）。
+    
+            // min(size.width, size.height)：取目前預覽視窗「寬」與「高」之中比較小的那一個。
+            // 這樣做可以確保時鐘不論視窗拉得太寬或太高，都能維持「正方形」的完美比例，不會變形。
+            // 除以 1080.0f：算出目前的實際像素大小是大螢幕標準（1080p）的幾分之幾（例如得到 0.25 代表是原本的四分之一大）。
             const float scale = min(size.width, size.height) / 1080.0f;
-            if (scale > 0.0f) pRenderTarget->SetDpi(96.0f * scale, 96.0f * scale);
+    
+            // 安全檢查：確保算出來的縮放比例大於 0（避免除以零或寬高為零導致程式崩潰）
+            if (scale > 0.0f) {
+                // Windows 系統預設「不縮放」的標準 DPI 數值是 96.0f。
+                // pRenderTarget 是 Direct2D 的繪圖畫布（Render Target）。
+        
+                // 這裡使用了 Direct2D 非常強大的魔術：SetDpi。
+                // 我們直接將標準 DPI (96.0f) 乘以剛剛算出來的縮放比例 (scale)。
+                // 當畫布的 DPI 被降低時，Direct2D 在底層繪製任何物件時，
+                // 都會「自動、高畫質、等比例」地將線條寬度、字體大小、圓形幾何全部一起縮小！
+                // 這樣開發者就不用辛辛苦苦去把每一行繪圖程式碼都乘以 scale 了。
+                pRenderTarget->SetDpi(96.0f * scale, 96.0f * scale);
+            }
         }
         // 時針專用：標準淺藍色
         pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(100.0f / 255.0f, 200.0f / 255.0f, 255.0f / 255.0f, 1.0f), &pHourBrush);
@@ -280,7 +340,7 @@ void InitD2D(HWND hwnd) {
             D2D1::ColorF(75.0f / 255.0f, 90.0f / 255.0f, 105.0f / 255.0f, 1.0f),
             &pTickBrush
         );
-        PreviewLog("Resources hour=%p minute=%p second=%p tick=%p text=%p stroke=%p", pHourBrush, pMinuteBrush, pSecondBrush, pTickBrush, pTextFormat, pRoundStrokeStyle);
+        // PreviewLog("Resources hour=%p minute=%p second=%p tick=%p text=%p stroke=%p", pHourBrush, pMinuteBrush, pSecondBrush, pTickBrush, pTextFormat, pRoundStrokeStyle);
     }
 }
 
@@ -740,10 +800,10 @@ void RenderClock(HWND hwnd) {
 
     // 結束繪製
     HRESULT hr = pRenderTarget->EndDraw();
-    static unsigned loggedFrames = 0;
-    if (loggedFrames++ < 3 || FAILED(hr)) {
-        PreviewLog("EndDraw hr=0x%08lx size=%.1fx%.1f visible=%d occluded=%u", hr, size.width, size.height, IsWindowVisible(hwnd), static_cast<unsigned>(pRenderTarget->CheckWindowState()));
-    }
+    // static unsigned loggedFrames = 0;
+    // if (loggedFrames++ < 3 || FAILED(hr)) {
+        // PreviewLog("EndDraw hr=0x%08lx size=%.1fx%.1f visible=%d occluded=%u", hr, size.width, size.height, IsWindowVisible(hwnd), static_cast<unsigned>(pRenderTarget->CheckWindowState()));
+    // }
     // 💡 安全防護：萬一使用者在執行屏保時更改了螢幕解析度（Device Lost），GPU 畫布會失效
     if (hr == D2DERR_RECREATE_TARGET) {
         CleanD2D(); // 立刻清空，下一幀定時器觸發時會自動重新 InitD2D 重新適應新解析度！
@@ -759,12 +819,37 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     switch (message)
     {
     case WM_TIMER:
-        { static unsigned ticks = 0; if (ticks++ < 3) PreviewLog("WM_TIMER visible=%d update=%d", IsWindowVisible(hWnd), GetUpdateRect(hWnd, NULL, FALSE)); }
-        // 16毫秒時間到，宣告整張畫板過期。最後參數填 FALSE 擋住系統粗暴擦除，交給 D2D1 完美覆蓋
+        // { 
+            // 【高效偵錯技巧】
+            // 宣告一個靜態變數 ticks（只會初始化一次，數值會跨呼叫累加）。
+            // 由於 WM_TIMER 每秒會瘋狂觸發 60 次，如果每次都寫 Log 會立刻塞爆硬碟。
+            // 這裡限制 ticks++ < 3，代表「只記錄前 3 次」的狀態，點到為止，既能觀察又省效能。
+            // static unsigned ticks = 0; 
+            // if (ticks++ < 3) {
+                // PreviewLog("WM_TIMER visible=%d update=%d", 
+                           // IsWindowVisible(hWnd), 
+                           // GetUpdateRect(hWnd, NULL, FALSE)); 
+            // }
+        // }
+        
+        // 16 毫秒時間到（約等同 60 FPS 刷新率），需要更新時鐘畫面。
+        // 這裡採取「分流處理」：區分【預覽小視窗】與【常規大視窗】
         if (isPreview) {
+            // 【預覽模式】：採取「同步直刷」策略
+            // 預覽小視窗寄生在系統設定面板內，萬一系統面板此時卡頓，訊息排隊就會被延遲。
+            // 為了不讓畫面結凍，我們直接、主動呼叫 RenderClock 繪圖函式，
+            // 繞過作業系統排隊機制，時間一到立刻強行把新畫面推向螢幕，確保 60 FPS 絕對流暢。
             RenderClock(hWnd);
         }
         else {
+            // 【顯示模式】：採取「異步排隊」策略
+            // 常規或全螢幕大畫面開銷較大，盲目直刷會浪費顯示卡（GPU）效能。
+            // InvalidateRect 的意思是通知 Windows：「我這張畫布過期了，請在系統有空時發送 WM_PAINT 訊息叫我重繪」。
+            //
+            // 關鍵細節：最後一個參數填入 FALSE（即 bErase = FALSE）。
+            // 這會擋住 Windows 傳統機制先用背景色「強制擦除黑白底色」的粗暴行為。
+            // 因為我們使用現代的 Direct2D 繪圖引擎，它會用新畫面「100% 完美覆蓋」舊畫面。
+            // 擋住系統擦除，就能徹底解決畫面閃爍（Flicker）的問題，實現絲滑的動態效果。
             InvalidateRect(hWnd, NULL, FALSE);
         }
         break;
@@ -809,14 +894,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
 
     case WM_SIZE:
-        PreviewLog("WM_SIZE %ux%u", LOWORD(lParam), HIWORD(lParam));
+        // PreviewLog("WM_SIZE %ux%u", LOWORD(lParam), HIWORD(lParam));
         // 💡 預覽小視窗可能會被系統縮放拉扯，解析度改變時需要銷毀 Direct2D 畫布以便重構
         CleanD2D();
         break;
 
     case WM_DESTROY:
-        PreviewLog("WM_DESTROY");
-        if (previewLog) { fclose(previewLog); previewLog = nullptr; }
+        // PreviewLog("WM_DESTROY");
+        // if (previewLog) { fclose(previewLog); previewLog = nullptr; }
         CleanD2D(); // 摧毀高階畫布，退還顯示卡記憶體
         KillTimer(hWnd, 1); // 砸碎高頻鬧鐘
         PostQuitMessage(0); // 宣告進程結束
